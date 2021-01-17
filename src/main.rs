@@ -25,7 +25,7 @@ fn main() {
 	let input_filename = &arguments[1];
 	let output_filename = &arguments[2];
 
-	let levels = 6;
+	let levels = 8;
 
 	// Load image.
 	println!("Loading image.");
@@ -42,17 +42,17 @@ fn main() {
 
 	// Generate dots along a lattice.
 	println!("Generating lattice.");
-	let lattice_density = 1; // 97 is mathematically nice.
+	let lattice_density = 3; // 97 is mathematically nice.
 	let mut points = generate_lattice(img.width()*lattice_density, img.height()*lattice_density, 1.0/(lattice_density as f32));
 
 	// Filter lattice points by the luminance levels.
 	println!("Filtering {} lattice points.", &points.len());
-	points = filter_points_by_luminance(&mut points, &img, levels, 0.5f32);
+	points = filter_points_by_luminance(&mut points, &img, levels, 1.0f32);
 
 	// Solve Hamiltonian Path
 	println!("Solving Hamiltonian Path for {} points.", &points.len());
-	// All neighbors are less than 2.0 * lattice density.  Use 2.1 for numerical safety.
-	let visit_order = solve_tsp(&points, 2.1f32/(lattice_density as f32));
+	// All neighbors are less than 1.5 * lattice density.  Use 1.75 for numerical safety.
+	let visit_order = solve_tsp(&points, 1.75f32/(lattice_density as f32));
 	points = visit_order.iter().map(|idx|{ points[*idx] }).collect::<Vec<(f32, f32)>>();
 
 	// Write output!
@@ -119,6 +119,10 @@ fn filter_points_by_luminance(points: &Vec<(f32, f32)>, img:&GrayImage, levels:u
 		if pixel_y as u32 >= img.height() || pixel_x as u32 >= img.width() {
 			return false;
 		}
+		// If this next thing is true, we add a dark spot.
+		// If the pixel is low, it's easier for this to be true.  Dark pixel -> more likely to add dark spot.
+		// Increase white level -> more likely for this to be true -> more likely to have dark spot -> darker image.
+		// Higher white level -> darker image.  Correct.
 		random::<f32>()*white_level > (img.get_pixel(pixel_x as u32, pixel_y as u32)[0] as f32 / levels as f32)
 	}).map(|&(x, y)| {
 		(x, y) // Clone
@@ -128,19 +132,18 @@ fn filter_points_by_luminance(points: &Vec<(f32, f32)>, img:&GrayImage, levels:u
 fn solve_tsp(points:&Vec<(f32, f32)>, neighbor_distance:f32) -> Vec<usize> {
 	// Return the order of the visits for a max-cost hamiltonian path.
 	// Since we're on a lattice, all solutions are equally good!  This means that, so long as we keep the lattice constraint, we're golden.
-	// We can accomplish this by starting with a single point, extending it to a line by connecting a neighbor, and then growing it into a triangle.
-	// For a randomly chosen edge in the set of edges, expand it to include a neighbor shared by the two endpoints.
 
 	let mut neighbors = Vec::<Vec<usize>>::with_capacity(points.len());
 	let neighbor_distance_sq = neighbor_distance*neighbor_distance;
-	let mut visited_point_set = HashSet::<usize>::with_capacity(points.len());
-	let mut boundary_point_list = Vec::<usize>::with_capacity(points.len());
-	let mut edges = HashMap::<usize, usize>::new(); // From Idx -> To Idx.  Edges are indexed by starting point.
-	let mut current_edge = random::<usize>() % points.len(); // The 'current edge' is defined by the index of the vertex of the start.
+	let mut parent = HashMap::<usize, usize>::new(); // Idx -> idx.
+	let mut max_path = HashMap::<usize, usize>::new();
+	let mut candidate_pts = Vec::<usize>::new(); // Possible next indices.
+	let mut unvisited = HashSet::<usize>::new();
 
 	// Init list.
-	for _i in 0..points.len() {
+	for i in 0..points.len() {
 		neighbors.push(vec![]);
+		unvisited.insert(i);
 	}
 
 	// Expensive O(n^2) conversion to neighbor list.
@@ -159,110 +162,57 @@ fn solve_tsp(points:&Vec<(f32, f32)>, neighbor_distance:f32) -> Vec<usize> {
 	}
 
 	// Pick a random starting point.
-	while neighbors[current_edge].len() < 3 {
-		current_edge = random::<usize>() % points.len();
-	}
-
-	// Grow the starting point into an actual edge.
-	// Pick two neighbor points which are also neighbors of each other.
-	let mut nbr_a = current_edge;
-	let mut nbr_b = current_edge;
-	'outer: loop {
-		for candidate_nbr_a in &neighbors[current_edge] {
-			for candidate_nbr_b in &neighbors[current_edge] {
-				if neighbors[*candidate_nbr_a].contains(candidate_nbr_b) && *candidate_nbr_a != current_edge && *candidate_nbr_b != current_edge && *candidate_nbr_a != *candidate_nbr_b {
-					nbr_a = *candidate_nbr_a;
-					nbr_b = *candidate_nbr_b;
-					break 'outer;
-				}
-			}
-		}
-		current_edge = random::<usize>() % points.len();
-	}
-	assert_ne!(current_edge, nbr_a);
-	assert_ne!(current_edge, nbr_b);
-	assert_ne!(nbr_a, nbr_b);
-
-	// Make these three neighbors into a loop.
-	let starting_edge = current_edge;
-	edges.insert(current_edge, nbr_a);
-	edges.insert(nbr_a, nbr_b);
-	edges.insert(nbr_b, current_edge);
-	visited_point_set.insert(current_edge);
-	visited_point_set.insert(nbr_a);
-	visited_point_set.insert(nbr_b);
-	boundary_point_list.push(current_edge);
-	boundary_point_list.push(nbr_a);
-	boundary_point_list.push(nbr_b);
-
-	// Keep growing the edges.
-	while boundary_point_list.len() > 2 && boundary_point_list.len() <= points.len() {
-		println!("Edges: {}", &edges.len());
-		println!("Boundary points: {}", &boundary_point_list.len());
-		println!("Visited points: {}", &visited_point_set.len());
-
-		// TODO: We should keep track of the points on the boundary, since those
-		current_edge = boundary_point_list[random::<usize>() % boundary_point_list.len()];
-		let edge_start_point = current_edge;
-		let edge_end_point = edges[&edge_start_point];
-
-		// Find neighbors of both of these points.  They should share _at most_ two.
-		let start_nbrs = &neighbors[edge_start_point];
-		let end_nbrs = &neighbors[edge_end_point];
-
-		let mut common_neighbors = vec![];
-		for pt in start_nbrs {
-			if !visited_point_set.contains(pt) && end_nbrs.contains(pt) {
-				common_neighbors.push(pt);
-			}
-		}
-
-		// Could be we don't have any neighbors.
-		if common_neighbors.len() < 1 {
-			let index_to_remove = boundary_point_list.iter().position(|p| { *p == edge_start_point }).unwrap();
-			boundary_point_list.remove(index_to_remove);
+	loop {
+		let start = random::<usize>() % points.len();
+		if neighbors[start].len() < 1usize {
 			continue;
 		}
+		candidate_pts.push(start);
+		parent.insert(start, start);
+		max_path.insert(start, 0);
+		break;
+	}
 
-		// Add this new point to the boundary!
-		let new_pt = common_neighbors[0];
-		if let Some(v) = edges.get_mut(&edge_start_point) {
-			*v = *new_pt;
-		} else {
-			edges.insert(edge_start_point, *new_pt);
+	let mut longest_path_length = 0;
+	let mut longest_path_end = 0;
+
+	// Find a path from start to end that maximizes the number of steps.
+	while candidate_pts.len() > 0 {
+		let current_pt = candidate_pts.pop();
+		if current_pt.is_none() {
+			continue;
 		}
-		edges.insert(*new_pt, edge_end_point);
-		boundary_point_list.push(*new_pt);
-		visited_point_set.insert(*new_pt);
+		let current_pt = current_pt.unwrap();
+		unvisited.remove(&current_pt);
 
-		// Check these two new edges and, if they can't grow any more, remove them from the boundary point list.
-		for p in &[edge_start_point, *new_pt, edge_end_point] {
-			let mut edge_can_grow = false;
-			let start_nbrs:&Vec<usize> = &neighbors[*p];
-			let end_nbrs:&Vec<usize> = &neighbors[edges[p]];
-			// If they also share one or more point, this edge can grow.
-			for a in start_nbrs {
-				if end_nbrs.contains(a) && !visited_point_set.contains(a) {
-					edge_can_grow = true;
-				}
-			}
+		// What's the distance to this one?
+		let dist = max_path[&parent[&current_pt]] + 1;
 
-			if !edge_can_grow {
-				if let Some(point_index) = boundary_point_list.iter().position(|p_to_remove| { *p_to_remove == *p }) {
-					boundary_point_list.remove(point_index);
+		// For each of the children, if they're unvisited, set their parent to this one IF it would make a longer path.
+		for nbr in &neighbors[current_pt] {
+			// If unvisited...
+			if unvisited.contains(&nbr) {
+				// Visit them next.
+				parent.insert(*nbr, current_pt);
+				max_path.insert(*nbr, dist+1); // To prevent others from overwriting it.
+				//candidate_pts.insert(0, nbr); // For BFS
+				candidate_pts.push(*nbr); // For DFS.
+
+				if dist+1 > longest_path_length {
+					longest_path_length = dist+1;
+					longest_path_end = *nbr;
 				}
 			}
 		}
 	}
 
-	// Start at some random point and move along until the end.
-	current_edge = edges[&starting_edge];
-	let mut final_path = vec![];
-	while current_edge != starting_edge {
-		final_path.push(current_edge);
-		current_edge = edges[&current_edge];
+	// Trace a path from the end to the start.
+	let mut path = vec![];
+	while parent[&longest_path_end] != longest_path_end {
+		path.push(longest_path_end);
+		longest_path_end = parent[&longest_path_end];
 	}
-	final_path
+	path
 }
 
 fn draw_image(points:Vec<(f32, f32)>, filename:&str, canvas_width:u32, canvas_height:u32) -> Result<(), Box<dyn std::error::Error>> {
