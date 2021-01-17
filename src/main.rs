@@ -46,11 +46,11 @@ fn main() {
 	let mut points = generate_lattice(img.width()*lattice_density, img.height()*lattice_density, 1.0/(lattice_density as f32));
 
 	// Filter lattice points by the luminance levels.
-	println!("Filtering lattice points.");
+	println!("Filtering {} lattice points.", &points.len());
 	points = filter_points_by_luminance(&mut points, &img, levels, 0.5f32);
 
 	// Solve Hamiltonian Path
-	println!("Solving Hamiltonian Path.");
+	println!("Solving Hamiltonian Path for {} points.", &points.len());
 	// All neighbors are less than 2.0 * lattice density.  Use 2.1 for numerical safety.
 	let visit_order = solve_tsp(&points, 2.1f32/(lattice_density as f32));
 	points = visit_order.iter().map(|idx|{ points[*idx] }).collect::<Vec<(f32, f32)>>();
@@ -139,7 +139,7 @@ fn solve_tsp(points:&Vec<(f32, f32)>, neighbor_distance:f32) -> Vec<usize> {
 	let mut current_edge = random::<usize>() % points.len(); // The 'current edge' is defined by the index of the vertex of the start.
 
 	// Init list.
-	for i in 0..points.len() {
+	for _i in 0..points.len() {
 		neighbors.push(vec![]);
 	}
 
@@ -151,7 +151,7 @@ fn solve_tsp(points:&Vec<(f32, f32)>, neighbor_distance:f32) -> Vec<usize> {
 			let dx = b_x - a_x;
 			let dy = b_y - a_y;
 			let dist_sq = dx * dx + dy * dy;
-			if dist_sq < neighbor_distance_sq {
+			if dist_sq <= neighbor_distance_sq {
 				neighbors[i].push(j);
 				neighbors[j].push(i);
 			}
@@ -196,12 +196,15 @@ fn solve_tsp(points:&Vec<(f32, f32)>, neighbor_distance:f32) -> Vec<usize> {
 	boundary_point_list.push(nbr_b);
 
 	// Keep growing the edges.
-	while boundary_point_list.len() > 2 && edges.len() <= points.len() {
-		println!("Size of path: {}", boundary_point_list.len());
+	while boundary_point_list.len() > 2 && boundary_point_list.len() <= points.len() {
+		println!("Edges: {}", &edges.len());
+		println!("Boundary points: {}", &boundary_point_list.len());
+		println!("Visited points: {}", &visited_point_set.len());
+
 		// TODO: We should keep track of the points on the boundary, since those
 		current_edge = boundary_point_list[random::<usize>() % boundary_point_list.len()];
 		let edge_start_point = current_edge;
-		let edge_end_point = edges[&current_edge];
+		let edge_end_point = edges[&edge_start_point];
 
 		// Find neighbors of both of these points.  They should share _at most_ two.
 		let start_nbrs = &neighbors[edge_start_point];
@@ -209,13 +212,15 @@ fn solve_tsp(points:&Vec<(f32, f32)>, neighbor_distance:f32) -> Vec<usize> {
 
 		let mut common_neighbors = vec![];
 		for pt in start_nbrs {
-			if end_nbrs.contains(pt) {
+			if !visited_point_set.contains(pt) && end_nbrs.contains(pt) {
 				common_neighbors.push(pt);
 			}
 		}
 
 		// Could be we don't have any neighbors.
 		if common_neighbors.len() < 1 {
+			let index_to_remove = boundary_point_list.iter().position(|p| { *p == edge_start_point }).unwrap();
+			boundary_point_list.remove(index_to_remove);
 			continue;
 		}
 
