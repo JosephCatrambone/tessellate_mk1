@@ -7,6 +7,7 @@ use rand::random;
 use std::env::args;
 use std::collections::{HashSet, HashMap};
 
+mod hilbert;
 mod point;
 
 use point::Point;
@@ -33,48 +34,15 @@ fn main() {
 	adjust_levels(&mut img, gray_levels);
 	//let integral:imageproc::definitions::Image<image::Luma<u8>> = imageproc::integral_image::integral_image(&img);
 
-	// Start with a single horizontal line.
-	let mut lines:Vec<Point> = vec![(0f32, img.height() as f32/2f32).into(), (img.width() as f32, img.height() as f32/2f32).into()];
-	for pass in 0..gray_levels {
-		let mut next_lines = vec![];
-		// For each line segment in the iteration...
-		for p_idx in 0..lines.len()-1 {
-			let line_start = lines[p_idx] as Point;
-			let line_end = lines[p_idx+1] as Point;
-
-			// Find how much area this line covers.  This means finding the bounding box.
-			// We want a square region, so find the midpoint of the line.
-			let midpoint = (line_start + line_end) * 0.5f32;
-			let dxdy = (line_end - line_start);
-			let radius = (dxdy.x*dxdy.x + dxdy.y*dxdy.y).sqrt();
-			let topleft = midpoint - Point::new(radius, radius);
-			let bottomright = midpoint + Point::new(radius, radius);
-
-			// Find the average luminance of this area, assuming it's big enough.
-			//let luma = imageproc::integral_image::sum_image_pixels(&integral, topleft.x as u32, topleft.y as u32, bottomright.x as u32, bottomright.y as u32);
-			let mut luminance = 0u32;
-			if radius*radius > 1f32 {
-				for y in topleft.y as u32..bottomright.y as u32 {
-					for x in topleft.x as u32..bottomright.x as u32 {
-						if x < 0 || x >= img.width() || y < 0 || y >= img.height() {
-							continue;
-						}
-						let pxl = img.get_pixel(x, y);
-						luminance += pxl[0] as u32;
-					}
-				}
-				luminance /= ((2f32*radius)*(2f32*radius)) as u32; // Average luminance.
-			}
-			println!("Luminance: {}", &luminance);
-			if luminance < (gray_levels - pass).into() && radius*radius > 1f32 {
-				next_lines.extend(tessellate(line_start, line_end));
-			} else {
-				next_lines.push(line_start);
-			}
+	let mut hilbert_curve = hilbert::Hilbert::new(img.width(), 0, 0, img.height(), None);
+	hilbert_curve.subdivide();
+	for y in 0..img.height() {
+		for x in 0..img.width() {
+			let luma = img.get_pixel(x, y)[0];
+			hilbert_curve.subdivide_leaf(x, y, (gray_levels - luma) as u32);
 		}
-		next_lines.push(lines.last().unwrap().clone());
-		lines = next_lines;
 	}
+	let mut lines:Vec<(f32, f32)> = hilbert_curve.rasterize();
 
 	// Convert 'lines' to points.
 	let points:Vec<(f32, f32)> = lines.iter().map(|&p| { p.into() }).collect();
@@ -96,7 +64,11 @@ fn adjust_levels(img:&mut GrayImage, steps:u8) {
 }
 
 fn tessellate(line_start:Point, line_end:Point) -> Vec<Point> {
-	tessellate_bolt(line_start, line_end)
+	if line_end == line_start {
+		vec![line_start]
+	} else {
+		tessellate_bolt(line_start, line_end)
+	}
 }
 
 fn tessellate_bolt(line_start:Point, line_end:Point) -> Vec<Point> {
@@ -106,30 +78,129 @@ fn tessellate_bolt(line_start:Point, line_end:Point) -> Vec<Point> {
 	//        \/
 	// One segment becomes four of 1/4th size.  We could also do three with different sizes.
 	let dpos = line_end - line_start;
-	let normal = Point::new(-dpos.y, dpos.x)*0.25f32; // Left-hand normal.
-	let pa = line_start;
-	let pb = line_start + dpos*0.25f32 + normal;
-	let pc = line_start + dpos*0.5f32;
-	let pd = line_start + dpos*0.75f32 - normal;
-	vec![pa, pb, pc, pd] // OMIT LINE END!
+	let left = Point::new(-dpos.y, dpos.x) * 0.75; // Lob-sided Left-hand normal.
+	let right = Point::new(dpos.y, -dpos.x) * 0.25f32;
+	let fwd = dpos * 0.5f32;
+	vec![
+		line_start,
+		line_start + fwd + left,
+		line_start + fwd,
+		line_start + fwd + right,
+		line_end
+	]
 }
 
-fn tessellate_hilbert(line_start:Point, line_end:Point) -> Vec<Point> {
-	// Replace ----
-	// With
-	// +-+ +-+
-	// | +-+ |
-	// +-+ +-+
-	// --+ +--
-	// One segment becomes four of 1/4th size.  We could also do three with different sizes.
+fn tessellate_hex(line_start:Point, line_end:Point) -> Vec<Point> {
+	//  e f
+	// a d g
+	//  b c
 	let dpos = line_end - line_start;
-	let normal = Point::new(-dpos.y, dpos.x)*0.25f32; // Left-hand normal.
-	let pa = line_start;
-	let pb = line_start + dpos*0.25f32 + normal;
-	let pc = line_start + dpos*0.5f32;
-	let pd = line_start + dpos*0.75f32 - normal;
-	vec![pa, pb, pc, pd] // OMIT LINE END!
+	let left_normal = Point::new(-dpos.y, dpos.x)*0.3f32;
+	let forward = dpos*0.3;
+	let right_normal = Point::new(dpos.y, -dpos.x)*0.3f32;
+	vec![
+		line_start,
+		line_start + forward + right_normal,
+		line_start + forward + right_normal + forward,
+		line_start + forward + forward,
+		line_start + forward + left_normal,
+		line_start + forward + left_normal + forward,
+		line_end
+	]
 }
+
+fn tessellate_square(line_start:Point, line_end:Point) -> Vec<Point> {
+	// Replace
+	// ----
+	// With
+	// bc
+	// adg
+	//  ef
+	let dpos = line_end - line_start;
+	let left_normal = Point::new(-dpos.y, dpos.x)*0.5f32;
+	let forward = dpos*0.5;
+	let right_normal = Point::new(dpos.y, -dpos.x)*0.5f32;
+	vec![
+		line_start,
+		line_start + left_normal,
+		line_start + left_normal + forward,
+		line_start + forward,
+		line_start + right_normal + forward,
+		line_start + right_normal + forward + forward,
+		line_end
+	]
+}
+
+fn tessellate_tee(line_start:Point, line_end:Point) -> Vec<Point> {
+	// g     h
+	// f e j i
+	// a x x m
+	//   b l
+	let dpos = line_end - line_start;
+	let a = line_start;
+	let l = Point::new(-dpos.y, dpos.x)*0.25f32;
+	let f = dpos*0.25;
+	let r = Point::new(dpos.y, -dpos.x)*0.25f32;
+	vec![
+		a,
+		a + f + r,
+		//a + f,
+		a + f + l,
+		a + l,
+		a + l + l,
+		a + l + l + f + f + f,
+		a + l + f + f + f,
+		a + l + f + f,
+		//a + f + f,
+		a + r + f + f,
+		a + f + f + f
+	]
+}
+
+fn tessellate_w(line_start:Point, line_end:Point) -> Vec<Point> {
+	//   c
+	// a   e
+	//  b d
+	let dpos = line_end - line_start;
+	let a = line_start;
+	let l = Point::new(-dpos.y, dpos.x)*0.4f32;
+	let f = dpos*0.2;
+	let r = Point::new(dpos.y, -dpos.x)*0.2f32;
+	vec![
+		a,
+		a + f + r,
+		a + f + f + l,
+		a + f + f + f + r,
+		line_end
+	]
+}
+
+fn tessellate_fake_hilbert(line_start:Point, line_end:Point) -> Vec<Point> {
+	// e fi j
+	// dcghlk
+	// ab  mn
+	let dpos = line_end - line_start;
+	let a = line_start;
+	let l = Point::new(-dpos.y, dpos.x)*0.25f32;
+	let f = dpos*0.15;
+	vec![
+		a,
+		a + f,
+		a + f + l,
+		a + l,
+		a + l + l,
+		a + l + l + f + f,
+		a + l + f + f,
+		a + l + f + f + f,
+		a + l + l + f + f + f,
+		a + l + l + f + f + f + f + f,
+		a + l + f + f + f + f + f,
+		a + l + f + f + f + f,
+		a + f + f + f + f,
+		line_end
+	]
+}
+
 
 fn draw_image(points:Vec<(f32, f32)>, filename:&str, canvas_width:u32, canvas_height:u32) -> Result<(), Box<dyn std::error::Error>> {
 	let mut backend = SVGBackend::new(filename, (canvas_width, canvas_height));
