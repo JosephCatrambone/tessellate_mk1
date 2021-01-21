@@ -4,8 +4,10 @@ use image::{Luma, GrayImage};
 use imageproc; // For fast integral image.
 use plotters::prelude::*;
 use rand::random;
-use std::env::args;
 use std::collections::{HashSet, HashMap};
+use std::env::args;
+use std::io::Write;
+use std::fs::File;
 
 mod hilbert;
 mod point;
@@ -15,13 +17,17 @@ use point::Point;
 fn main() {
 	// Process CLI.
 	let arguments:Vec<String> = args().collect::<Vec<String>>();
-	if arguments.len() != 3 {
+	if arguments.len() < 3 {
 		println!("Usage: {} <input filename> <output filename>", &arguments[0]);
 		return;
 	}
 	let input_filename = &arguments[1];
 	let output_filename = &arguments[2];
-	let gray_levels = 8;
+	let gray_levels = if arguments.len() < 4 {
+		10
+	} else {
+		arguments[3].parse::<u8>().unwrap()
+	};
 
 	// Load image.
 	println!("Loading image.");
@@ -210,6 +216,11 @@ fn draw_image(points:Vec<(f32, f32)>, filename:&str, canvas_width:u32, canvas_he
 		//backend.draw_circle((points[i].0 as i32, points[i].1 as i32), 1u32, &BLACK, false);
 	}
 	//backend.draw_rect((50, 50), (200, 150), &RED, true)?;
+
+	let mut fout = File::create(std::path::Path::new(&("raw_".to_owned() + &filename.to_owned()))).unwrap();
+	points.iter().for_each(|&p|{
+		fout.write(format!("{},{}\n", p.0, p.1).as_ref());
+	});
 
 	Ok(())
 }
